@@ -7,7 +7,7 @@
 """Tool for creating multi-resolution TFRecords datasets."""
 
 # pylint: disable=too-many-lines
-import os
+import os, pickle
 import sys
 import glob
 import argparse
@@ -18,7 +18,7 @@ import numpy as np
 import tensorflow as tf
 import PIL.Image
 import dnnlib.tflib as tflib
-
+import scipy.misc
 from training import dataset
 
 #----------------------------------------------------------------------------
@@ -80,13 +80,46 @@ class TFRecordExporter:
             if lod:
                 img = img.astype(np.float32)
                 # takes the average of the four pixels to reduce axis dimension by 2
-                img = (img[:, 0::2, 0::2] + img[:, 0::2, 1::2] + img[:, 1::2, 0::2] + img[:, 1::2, 1::2]) * 0.25
-            quant = np.rint(img).clip(0, 255).astype(np.uint8)
+                img = (img[:, 0::2, 0::2, 0::2] + img[:, 0::2, 0::2, 1::2] + img[:, 0::2, 1::2, 0::2] + img[:, 0::2, 1::2, 1::2] +
+                       img[:, 1::2, 0::2, 0::2] + img[:, 1::2, 0::2, 1::2] + img[:, 1::2, 1::2, 0::2] + img[:, 1::2, 1::2, 1::2]) * 0.125
+                # img = img[:, ::2, ::2,::2]
+
+            quant = np.rint(img).astype(np.int16)
+            print(quant.shape, lod)
+            scipy.misc.imsave('quant'+str(lod)+'.png', quant[0,quant.shape[1]//2])
             ex = tf.train.Example(features=tf.train.Features(feature={
                 'shape': tf.train.Feature(int64_list=tf.train.Int64List(value=quant.shape)),
                 'data': tf.train.Feature(bytes_list=tf.train.BytesList(value=[quant.tostring()]))}))
             tfr_writer.write(ex.SerializeToString())
         self.cur_images += 1
+
+    # def add_image(self, img):
+    #     if self.print_progress and self.cur_images % self.progress_interval == 0:
+    #         print('%d / %d\r' % (self.cur_images, self.expected_images), end='', flush=True)
+    #     if self.shape is None:
+    #         self.shape = img.shape
+    #         self.resolution_log2 = int(np.log2(self.shape[1]))
+    #         # assert self.shape[0] in [1, 3]
+    #         assert self.shape[1] == self.shape[2]
+    #         assert self.shape[1] == 2**self.resolution_log2
+    #         tfr_opt = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.NONE)
+    #         for lod in range(self.resolution_log2 - 1):
+    #             tfr_file = self.tfr_prefix + '-r%02d.tfrecords' % (self.resolution_log2 - lod)
+    #             self.tfr_writers.append(tf.python_io.TFRecordWriter(tfr_file, tfr_opt))
+    #     assert img.shape == self.shape
+    #     for lod, tfr_writer in enumerate(self.tfr_writers):
+    #         if lod:
+    #             img = img.astype(np.float32)
+    #             # takes the average of the four pixels to reduce axis dimension by 2
+    #             img = (img[:, 0::2, 0::2, 0::2] + img[:, 0::2, 0::2, 1::2] + img[:, 0::2, 1::2, 0::2] + img[:, 0::2, 1::2, 1::2] +
+    #                    img[:, 1::2, 0::2, 0::2] + img[:, 1::2, 0::2, 1::2] + img[:, 1::2, 1::2, 0::2] + img[:, 1::2, 1::2, 1::2]) * 0.125
+    #         quant = np.rint(img).astype(np.int16)
+    #         print(quant.shape)
+    #         ex = tf.train.Example(features=tf.train.Features(feature={
+    #             'shape': tf.train.Feature(int64_list=tf.train.Int64List(value=quant.shape)),
+    #             'data': tf.train.Feature(bytes_list=tf.train.BytesList(value=[quant.tostring()]))}))
+    #         tfr_writer.write(ex.SerializeToString())
+    #     self.cur_images += 1
 
     def add_labels(self, labels):
         if self.print_progress:
@@ -239,6 +272,39 @@ def extract(tfrecord_dir, output_dir):
             img = PIL.Image.fromarray(images[0].transpose(1, 2, 0), 'RGB')
         img.save(os.path.join(output_dir, 'img%08d.png' % idx))
         idx += 1
+    print('Extracted %d images.' % idx)
+
+#----------------------------------------------------------------------------
+
+def extract3d(tfrecord_dir, output_dir):
+    print('Loading dataset "%s"' % tfrecord_dir)
+    tflib.init_tf({'gpu_options.allow_growth': True})
+    dset = dataset.TFRecordDataset(tfrecord_dir, max_label_size=0, repeat=False, shuffle_mb=0)
+    tflib.init_uninitialized_vars()
+
+    print('Extracting images to "%s"' % output_dir)
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir)
+    idx = 0
+    while True:
+        if idx % 10 == 0:
+            print('%d\r' % idx, end='', flush=True)
+        try:
+            images, _labels = dset.get_minibatch_np(1)
+        except tf.errors.OutOfRangeError:
+            break
+
+        print(images.shape)
+        # img = PIL.Image.fromarray(images[0][0][64], 'L')
+        pickle.dump(images, open(os.path.join(output_dir, 'img%08d.pt' % idx), 'wb'))
+        # if images.shape[1] == 1:
+        #     img = PIL.Image.fromarray(images[0][0], 'L')
+        # else:
+        #     img = PIL.Image.fromarray(images[0].transpose(1, 2, 0), 'RGB')
+        # img.save(os.path.join(output_dir, 'img%08d.png' % idx))
+        scipy.misc.imsave(os.path.join(output_dir, 'img%08d.png' % idx), images[0][0][64])
+        idx += 1
+
     print('Extracted %d images.' % idx)
 
 #----------------------------------------------------------------------------
@@ -527,6 +593,28 @@ def create_from_images(tfrecord_dir, image_dir, shuffle):
                 img = img.transpose([2, 0, 1]) # HWC => CHW
             tfr.add_image(img)
 
+def create_from_images_3d(tfrecord_dir, image_dir, shuffle):
+    print('Loading images from "%s"' % image_dir)
+    image_filenames = sorted(glob.glob(os.path.join(image_dir, '*')))
+    if len(image_filenames) == 0:
+        error('No input images found')
+    #
+    # img = pickle.load(open(image_filenames[0],'rb'))
+    # resolution = img.shape[0]
+    # channels = img.shape[2] if img.ndim == 3 else 1
+
+    with TFRecordExporter(tfrecord_dir, len(image_filenames)) as tfr:
+        order = tfr.choose_shuffled_order() if shuffle else np.arange(len(image_filenames))
+        for idx in range(order.size):
+            img = pickle.load(open(image_filenames[order[idx]],'rb')).astype('int16')
+            img = np.expand_dims(img, 0)
+            print(img.shape)
+            # if channels == 1:
+            #     img = img[np.newaxis, :, :] # HW => CHW
+            # else:
+            #     img = img.transpose([2, 0, 1]) # HWC => CHW
+            tfr.add_image(img)
+
 #----------------------------------------------------------------------------
 
 def create_from_hdf5(tfrecord_dir, hdf5_filename, shuffle):
@@ -562,6 +650,11 @@ def execute_cmdline(argv):
     p.add_argument(     'tfrecord_dir',     help='Directory containing dataset')
 
     p = add_command(    'extract',          'Extract images from dataset.',
+                                            'extract datasets/mnist mnist-images')
+    p.add_argument(     'tfrecord_dir',     help='Directory containing dataset')
+    p.add_argument(     'output_dir',       help='Directory to extract the images into')
+
+    p = add_command(    'extract3d',          'Extract images from dataset.',
                                             'extract datasets/mnist mnist-images')
     p.add_argument(     'tfrecord_dir',     help='Directory containing dataset')
     p.add_argument(     'output_dir',       help='Directory to extract the images into')
@@ -622,6 +715,11 @@ def execute_cmdline(argv):
     p.add_argument(     '--cy',             help='Center Y coordinate (default: 121)', type=int, default=121)
 
     p = add_command(    'create_from_images', 'Create dataset from a directory full of images.',
+                                            'create_from_images datasets/mydataset myimagedir')
+    p.add_argument(     'tfrecord_dir',     help='New dataset directory to be created')
+    p.add_argument(     'image_dir',        help='Directory containing the images')
+    p.add_argument(     '--shuffle',        help='Randomize image order (default: 1)', type=int, default=1)
+    p = add_command(    'create_from_images_3d', 'Create dataset from a directory full of images.',
                                             'create_from_images datasets/mydataset myimagedir')
     p.add_argument(     'tfrecord_dir',     help='New dataset directory to be created')
     p.add_argument(     'image_dir',        help='Directory containing the images')

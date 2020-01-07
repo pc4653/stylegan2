@@ -76,7 +76,7 @@ class TFRecordDataset:
         self.resolution_log2 = int(np.log2(self.resolution))
         self.shape = [max_shape[0], self.resolution, self.resolution]
         tfr_lods = [self.resolution_log2 - int(np.log2(shape[1])) for shape in tfr_shapes]
-        assert all(shape[0] == max_shape[0] for shape in tfr_shapes)
+        # assert all(shape[0] == max_shape[0] for shape in tfr_shapes)
         assert all(shape[1] == shape[2] for shape in tfr_shapes)
         assert all(shape[1] == self.resolution // (2**lod) for shape, lod in zip(tfr_shapes, tfr_lods))
         assert all(lod in tfr_lods for lod in range(self.resolution_log2 - 1))
@@ -141,6 +141,7 @@ class TFRecordDataset:
         with tf.name_scope('Dataset'):
             if self._tf_minibatch_np is None:
                 self._tf_minibatch_np = self.get_minibatch_tf()
+            print(self._tf_minibatch_np)
             return tflib.run(self._tf_minibatch_np)
 
     # Get random labels as TensorFlow expression.
@@ -161,9 +162,9 @@ class TFRecordDataset:
     @staticmethod
     def parse_tfrecord_tf(record):
         features = tf.parse_single_example(record, features={
-            'shape': tf.FixedLenFeature([3], tf.int64),
+            'shape': tf.FixedLenFeature([4], tf.int64),
             'data': tf.FixedLenFeature([], tf.string)})
-        data = tf.decode_raw(features['data'], tf.uint8)
+        data = tf.decode_raw(features['data'], tf.int16)
         return tf.reshape(data, features['shape'])
 
     # Parse individual image from a tfrecords file into NumPy array.
@@ -173,6 +174,9 @@ class TFRecordDataset:
         ex.ParseFromString(record)
         shape = ex.features.feature['shape'].int64_list.value # pylint: disable=no-member
         data = ex.features.feature['data'].bytes_list.value[0] # pylint: disable=no-member
+        # print(data.shape)
+        if len(shape) == 4:
+            return np.fromstring(data, np.int16).reshape(shape)
         return np.fromstring(data, np.uint8).reshape(shape)
 
 #----------------------------------------------------------------------------
